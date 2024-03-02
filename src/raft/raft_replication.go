@@ -25,6 +25,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 // 对来自Leader的心跳/日志同步请求进行回调
@@ -40,21 +43,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log", args.LeaderId)
 		return
 	}
+
+	defer rf.resetElectionTimerLocked()
+
 	// 如果Leader请求的任期比当前任期大
-	// ？？？这里当我是candidate且和leader的任期相同时，不用将votedFor置为-1吗？
+	// ？？？这里当我是candidate且和leader的任期相同时，不用将votedFor置为-1吗？ 一个任期只能投票一次
 	if args.Term >= rf.currentTerm {
 		rf.becomeFollowerLocked(args.Term)
 	}
 
 	if args.PrevLogIndex >= len(rf.log) {
+		reply.ConflictIndex = len(rf.log)
+		reply.ConflictTerm = InvalidTerm
 		return
 	}
 
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		reply.ConflictIndex = rf.firstLogFor(reply.ConflictTerm)
 		return
 	}
 
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.persistLocked()
 	reply.Success = true
 
 	//
@@ -62,9 +73,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = args.LeaderCommit
 		rf.applyCond.Signal()
 	}
-
-	rf.resetElectionTimerLocked()
-
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -102,12 +110,20 @@ func (rf *Raft) startReplication(term int) bool {
 
 		// 如果返回失败，那么需要往前试探
 		if !reply.Success {
-			idx := args.PrevLogIndex
-			term := args.PrevLogTerm
-			for idx > 0 && rf.log[idx].Term == term {
-				idx--
+			preIndex := rf.nextIndex[peer]
+			if reply.ConflictTerm == InvalidTerm {
+				rf.nextIndex[peer] = reply.ConflictIndex
+			} else {
+				firstIndex := rf.firstLogFor(reply.ConflictTerm)
+				if firstIndex != InvalidIndex {
+					rf.nextIndex[peer] = firstIndex
+				} else {
+					rf.nextIndex[peer] = reply.ConflictIndex
+				}
 			}
-			rf.nextIndex[peer] = idx + 1
+			if preIndex < rf.nextIndex[peer] {
+				rf.nextIndex[peer] = preIndex
+			}
 			return
 		}
 
@@ -116,7 +132,7 @@ func (rf *Raft) startReplication(term int) bool {
 
 		//
 		majorityMatched := rf.getMajorityIndexLocked()
-		if majorityMatched > rf.commitIndex {
+		if majorityMatched > rf.commitIndex && rf.log[majorityMatched].Term == rf.currentTerm {
 			rf.commitIndex = majorityMatched
 			rf.applyCond.Signal()
 		}
@@ -145,8 +161,8 @@ func (rf *Raft) startReplication(term int) bool {
 			LeaderId:     rf.me,
 			PrevLogIndex: prevIdx,
 			PrevLogTerm:  prevTerm,
-			//Entries:      rf.log[prevIdx+1:],
-			Entries:      append([]LogEntry(nil), rf.log[prevIdx+1:]...),
+			Entries:      rf.log[prevIdx+1:],
+			//Entries:      append([]LogEntry(nil), rf.log[prevIdx+1:]...),
 			LeaderCommit: rf.commitIndex,
 		}
 		go replicationToPeer(i, args)
