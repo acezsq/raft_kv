@@ -27,9 +27,9 @@ func (rf *Raft) persistLocked() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	rf.log.persist(e)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	rf.persister.Save(raftstate, rf.log.snapshot)
 
 }
 
@@ -57,7 +57,6 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var currentTerm int
 	var votedFor int
-	var log []LogEntry
 	if d.Decode(&currentTerm) != nil {
 		return
 	}
@@ -66,8 +65,13 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	rf.votedFor = votedFor
-	if d.Decode(&log) != nil {
+	// 完成rl.snapLastIdx和rl.snapLastTerm以及rl.tailLog的持久化读取
+	if rf.log.readPersist(d) != nil {
 		return
 	}
-	rf.log = log
+	rf.log.snapshot = rf.persister.ReadSnapshot()
+	if rf.log.snapLastIdx > rf.commitIndex {
+		rf.commitIndex = rf.log.snapLastIdx
+		rf.lastApplied = rf.log.snapLastIdx
+	}
 }

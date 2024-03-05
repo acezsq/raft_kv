@@ -81,19 +81,21 @@ type Raft struct {
 	currentTerm int
 	votedFor    int
 
-	log []LogEntry
+	log *RaftLog
+
+	//leader独有
+	nextIndex  []int
+	matchIndex []int
 
 	electionStart   time.Time
 	electionTimeout time.Duration
 
-	nextIndex  []int
-	matchIndex []int
-
+	// 为了apply
 	commitIndex int
 	lastApplied int
-
-	applyCond *sync.Cond
-	applyCh   chan ApplyMsg
+	snapPending bool
+	applyCond   *sync.Cond
+	applyCh     chan ApplyMsg
 }
 
 func (rf *Raft) becomeFollowerLocked(term int) {
@@ -138,7 +140,7 @@ func (rf *Raft) becomeLeaderLocked() {
 	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d", rf.role, rf.currentTerm)
 	rf.role = Leader
 	for peer := 0; peer < len(rf.peers); peer++ {
-		rf.nextIndex[peer] = len(rf.log)
+		rf.nextIndex[peer] = rf.log.size()
 		rf.matchIndex[peer] = 0
 	}
 }
@@ -149,15 +151,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.role == Leader
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (PartD).
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -182,13 +175,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.role != Leader {
 		return 0, 0, false
 	}
-	rf.log = append(rf.log, LogEntry{
+	rf.log.append(LogEntry{
 		CommandValid: true,
 		Command:      command,
 		Term:         rf.currentTerm,
 	})
 	rf.persistLocked()
-	return len(rf.log) - 1, rf.currentTerm, true
+	return rf.log.size() - 1, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -237,14 +230,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 
 	// Your initialization code here (PartA, PartB, PartC).
-	rf.log = append(rf.log, LogEntry{})
+	rf.log = NewLog(InvalidIndex, InvalidTerm, nil, nil)
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 
+	// 为了apply进行初始化
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.snapPending = false
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -254,15 +249,4 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.applicationTicker()
 
 	return rf
-}
-
-func (rf *Raft) firstLogFor(term int) int {
-	for i, entry := range rf.log {
-		if entry.Term == term {
-			return i
-		} else if entry.Term > term {
-			break
-		}
-	}
-	return InvalidIndex
 }

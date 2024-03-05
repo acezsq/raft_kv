@@ -20,8 +20,7 @@ func (rf *Raft) isElectionTimeoutLocked() bool {
 
 // 当前节点是否比candidate更新
 func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
-	l := len(rf.log)
-	lastIndex, lastTerm := l-1, rf.log[l-1].Term
+	lastIndex, lastTerm := rf.log.last()
 
 	if lastTerm != candidateTerm {
 		return lastTerm > candidateTerm
@@ -33,8 +32,9 @@ func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (PartA, PartB).
-	Term         int // 候选者任期
-	CandidateId  int // 候选者ID
+	Term        int // 候选者任期
+	CandidateId int // 候选者ID
+
 	LastLogIndex int
 	LastLogTerm  int
 }
@@ -154,7 +154,7 @@ func (rf *Raft) startElection(term int) {
 		return
 	}
 
-	l := len(rf.log)
+	lastIdx, lastTerm := rf.log.last()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			votes++
@@ -163,8 +163,8 @@ func (rf *Raft) startElection(term int) {
 		args := &RequestVoteArgs{
 			Term:         rf.currentTerm,
 			CandidateId:  rf.me,
-			LastLogIndex: l - 1,
-			LastLogTerm:  rf.log[l-1].Term,
+			LastLogIndex: lastIdx,
+			LastLogTerm:  lastTerm,
 		}
 		go askVoteFromPeer(peer, args)
 	}

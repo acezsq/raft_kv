@@ -43,28 +43,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log", args.LeaderId)
 		return
 	}
-
-	defer rf.resetElectionTimerLocked()
-
 	// 如果Leader请求的任期比当前任期大
 	// ？？？这里当我是candidate且和leader的任期相同时，不用将votedFor置为-1吗？ 一个任期只能投票一次
 	if args.Term >= rf.currentTerm {
 		rf.becomeFollowerLocked(args.Term)
 	}
 
-	if args.PrevLogIndex >= len(rf.log) {
-		reply.ConflictIndex = len(rf.log)
+	defer rf.resetElectionTimerLocked()
+
+	if args.PrevLogIndex >= rf.log.size() {
+		reply.ConflictIndex = rf.log.size()
 		reply.ConflictTerm = InvalidTerm
 		return
 	}
 
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
-		reply.ConflictIndex = rf.firstLogFor(reply.ConflictTerm)
+	if args.PrevLogIndex < rf.log.snapLastIdx {
+		reply.ConflictTerm = rf.log.snapLastTerm
+		reply.ConflictIndex = rf.log.snapLastIdx
 		return
 	}
 
-	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	if rf.log.at(args.PrevLogIndex).Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log.at(args.PrevLogIndex).Term
+		reply.ConflictIndex = rf.log.firstFor(reply.ConflictTerm)
+		return
+	}
+
+	rf.log.appendFrom(args.PrevLogIndex, args.Entries)
 	rf.persistLocked()
 	reply.Success = true
 
@@ -114,7 +119,7 @@ func (rf *Raft) startReplication(term int) bool {
 			if reply.ConflictTerm == InvalidTerm {
 				rf.nextIndex[peer] = reply.ConflictIndex
 			} else {
-				firstIndex := rf.firstLogFor(reply.ConflictTerm)
+				firstIndex := rf.log.firstFor(reply.ConflictTerm)
 				if firstIndex != InvalidIndex {
 					rf.nextIndex[peer] = firstIndex
 				} else {
@@ -124,6 +129,13 @@ func (rf *Raft) startReplication(term int) bool {
 			if preIndex < rf.nextIndex[peer] {
 				rf.nextIndex[peer] = preIndex
 			}
+			nextPrevIndex := rf.nextIndex[peer] - 1
+			nextPrevTerm := InvalidTerm
+			if nextPrevIndex >= rf.log.snapLastIdx {
+				nextPrevTerm = rf.log.at(nextPrevIndex).Term
+			}
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at Prev=[%d]T%d, Try next Prev=[%d]T%d",
+				peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
 			return
 		}
 
@@ -132,7 +144,7 @@ func (rf *Raft) startReplication(term int) bool {
 
 		//
 		majorityMatched := rf.getMajorityIndexLocked()
-		if majorityMatched > rf.commitIndex && rf.log[majorityMatched].Term == rf.currentTerm {
+		if majorityMatched > rf.commitIndex && rf.log.at(majorityMatched).Term == rf.currentTerm {
 			rf.commitIndex = majorityMatched
 			rf.applyCond.Signal()
 		}
@@ -149,19 +161,30 @@ func (rf *Raft) startReplication(term int) bool {
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			// 更新leader的matchIndex
-			rf.matchIndex[i] = len(rf.log) - 1
-			rf.nextIndex[i] = len(rf.log)
+			rf.matchIndex[i] = rf.log.size() - 1
+			rf.nextIndex[i] = rf.log.size()
 			continue
 		}
 
 		prevIdx := rf.nextIndex[i] - 1
-		prevTerm := rf.log[prevIdx].Term
+		if prevIdx < rf.log.snapLastIdx {
+			args := &InstallSnapshotArgs{
+				Term:              rf.currentTerm,
+				LeaderId:          rf.me,
+				LastIncludedIndex: rf.log.snapLastIdx,
+				LastIncludedTerm:  rf.log.snapLastTerm,
+				Snapshot:          rf.log.snapshot,
+			}
+			go rf.installToPeer(i, term, args)
+			continue
+		}
+		prevTerm := rf.log.at(prevIdx).Term
 		args := &AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
 			PrevLogIndex: prevIdx,
 			PrevLogTerm:  prevTerm,
-			Entries:      rf.log[prevIdx+1:],
+			Entries:      rf.log.tail(prevIdx + 1),
 			//Entries:      append([]LogEntry(nil), rf.log[prevIdx+1:]...),
 			LeaderCommit: rf.commitIndex,
 		}
