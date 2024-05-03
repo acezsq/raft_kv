@@ -9,7 +9,7 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
-	ErrTimeout     = "ErrTimeout"
+	ErrTimeOut     = "ErrTimeOut"
 )
 
 const ClientRequestTimeout = 500 * time.Millisecond

@@ -153,7 +153,7 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.role == Leader
 }
 
-func (rf *Raft) GetStateSize() int {
+func (rf *Raft) GetRaftStateSize() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.persister.RaftStateSize()

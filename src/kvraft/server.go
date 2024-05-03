@@ -58,7 +58,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Value = result.Value
 		reply.Err = result.Err
 	case <-time.After(ClientRequestTimeout):
-		reply.Err = ErrTimeout
+		reply.Err = ErrTimeOut
 	}
 
 	go func() {
@@ -107,7 +107,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	case result := <-notifyCh:
 		reply.Err = result.Err
 	case <-time.After(ClientRequestTimeout):
-		reply.Err = ErrTimeout
+		reply.Err = ErrTimeOut
 	}
 
 	go func() {
